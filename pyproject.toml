@@ -1,0 +1,57 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "kis-passive-trader"
+version = "0.1.0"
+description = "Passive limit-order execution for KIS (한국투자증권) that pegs to best bid/ask to minimize bid-ask spread cost."
+readme = "README.md"
+license = { file = "LICENSE" }
+authors = [
+  { name = "Collab Technologies Inc.", email = "webmaster@collab-tech.co.kr" },
+]
+requires-python = ">=3.10"
+keywords = ["kis", "koreainvestment", "passive", "trading", "limit-order", "kospi", "kosdaq"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Intended Audience :: Financial and Insurance Industry",
+  "License :: OSI Approved :: MIT License",
+  "Operating System :: OS Independent",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Topic :: Office/Business :: Financial :: Investment",
+]
+dependencies = [
+  "requests>=2.31",
+  "python-dotenv>=1.0",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=7.4",
+  "pytest-cov>=4.1",
+  "ruff>=0.1",
+]
+
+[project.urls]
+Homepage = "https://github.com/cheungsangwoo/kis_passive_trader"
+Repository = "https://github.com/cheungsangwoo/kis_passive_trader"
+Issues = "https://github.com/cheungsangwoo/kis_passive_trader/issues"
+
+[project.scripts]
+kis-passive-trader = "kis_passive_trader.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
