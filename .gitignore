@@ -8,6 +8,12 @@
 .kis_passive_trader/
 *.log
 
+# KIS access-token cache (grants trading — never commit)
+.kis_token.json
+
+# Resumable per-session state files
+.patient_maker_state_*.json
+
 # Python
 __pycache__/
 *.py[cod]

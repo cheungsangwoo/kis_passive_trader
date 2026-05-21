@@ -1,0 +1,33 @@
+{
+  "signal_id": "w1_luk_pead_alloc",
+  "signal_name": "Limit-Up + Earnings (cash-overflow weekly)",
+  "as_of": "2026-05-22",
+  "rebalance_cadence": "weekly",
+  "transaction_cost_assumed_bps": 15,
+  "positions": [
+    {
+      "stock_code": "005930",
+      "stock_name": "삼성전자",
+      "weight": 0.4,
+      "reference_close": 71500,
+      "reference_close_date": "2026-05-22",
+      "side": "BUY"
+    },
+    {
+      "stock_code": "000660",
+      "stock_name": "SK하이닉스",
+      "weight": 0.35,
+      "reference_close": 178000,
+      "reference_close_date": "2026-05-22",
+      "side": "BUY"
+    },
+    {
+      "stock_code": "035420",
+      "stock_name": "NAVER",
+      "weight": 0.25,
+      "reference_close": 95000,
+      "reference_close_date": "2026-05-15",
+      "side": "BUY"
+    }
+  ]
+}

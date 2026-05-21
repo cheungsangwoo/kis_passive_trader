@@ -9,7 +9,7 @@ description = "Passive limit-order execution for KIS (한국투자증권) that p
 readme = "README.md"
 license = { file = "LICENSE" }
 authors = [
-  { name = "Collab Technologies Inc.", email = "webmaster@collab-tech.co.kr" },
+  { name = "cheungsangwoo" },
 ]
 requires-python = ">=3.10"
 keywords = ["kis", "koreainvestment", "passive", "trading", "limit-order", "kospi", "kosdaq"]
@@ -43,6 +43,7 @@ Repository = "https://github.com/cheungsangwoo/kis_passive_trader"
 Issues = "https://github.com/cheungsangwoo/kis_passive_trader/issues"
 
 [project.scripts]
+patient-maker = "kis_passive_trader.patient_maker:main"
 kis-passive-trader = "kis_passive_trader.cli:main"
 
 [tool.setuptools.packages.find]
@@ -51,6 +52,7 @@ where = ["src"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 python_files = ["test_*.py"]
+pythonpath = ["src"]
 
 [tool.ruff]
 line-length = 100
