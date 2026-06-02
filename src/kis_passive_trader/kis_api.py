@@ -392,3 +392,43 @@ class KisAPI(BrokerAPI):
             total_qty=total,
             is_open=remaining > 0,
         )
+
+    def get_holdings(self) -> dict[str, dict]:
+        """Current equity holdings: {ticker: {"qty": int, "name": str}}.
+
+        Queries inquire-balance (체결기준 잔고). Paginates CTX_AREA_*100 if the
+        account holds more than one page. Only non-zero holding_qty rows returned.
+        Used by the reconcile-to-target flow to diff actual vs target.
+        """
+        self._ensure_token()
+        tr_id = _tr(*TR_BALANCE, self.paper)
+        holdings: dict[str, dict] = {}
+        fk, nk = "", ""
+        for _ in range(20):  # hard page cap
+            resp = self._request_with_retry(
+                "GET",
+                f"{self.base}/uapi/domestic-stock/v1/trading/inquire-balance",
+                headers=self._headers(tr_id),
+                params={
+                    **self._acct_params(),
+                    "AFHR_FLPR_YN": "N", "OFL_YN": "", "INQR_DVSN": "02",
+                    "UNPR_DVSN": "01", "FUND_STTL_ICLD_YN": "N",
+                    "FNCG_AMT_AUTO_RDPT_YN": "N", "PRCS_DVSN": "00",
+                    "CTX_AREA_FK100": fk, "CTX_AREA_NK100": nk,
+                },
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            for r in (data.get("output1", []) or []):
+                ticker = str(r.get("pdno", "")).strip()
+                qty = _int(r.get("hldg_qty"))
+                if ticker and qty > 0:
+                    holdings[ticker] = {"qty": qty,
+                                        "name": str(r.get("prdt_name", "")).strip()}
+            # tr_cont 'F'/'M' = more pages; else done.
+            if str(data.get("tr_cont", "")).strip() in ("F", "M"):
+                fk = str(data.get("ctx_area_fk100", "")).strip()
+                nk = str(data.get("ctx_area_nk100", "")).strip()
+            else:
+                break
+        return holdings
