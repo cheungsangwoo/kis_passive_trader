@@ -31,6 +31,7 @@ class OrderRequest:
     side: str          # "BUY" or "SELL"
     qty: int
     ref_price: int = 0   # Snapshot price at payload generation, for sanity checks
+    drift_band: float | None = None   # per-order give-up band (e.g. PEAD 0.07 / LUK 0.12)
 
 
 @dataclass
@@ -72,15 +73,26 @@ def execute_order(
     poll_seconds: float = 8.0,
     max_order_krw: int = 5_000_000,
     price_deviation_abort: float = 0.15,
+    drift_band: float | None = None,
     sleep_fn=time.sleep,
     now_fn=datetime.now,
 ) -> OrderResult:
     """Execute a single order with the peg-to-best strategy.
 
+    `drift_band` (e.g. 0.07): a CONTINUOUS give-up guard. Each iteration, if the
+    touch we'd peg to has drifted past `drift_band` AGAINST us from request.ref_price
+    (BUY: peg > ref*(1+band); SELL: peg < ref*(1-band)), we stop chasing — cancel any
+    resting order and abandon the rest. This is what lets us "re-peg repeatedly until
+    filled" (raise max_iterations / run to close) while bounding how far we'll chase
+    a moving price. `price_deviation_abort` (default 0.15) is the legacy one-shot
+    INITIAL check; drift_band supersedes it when set (checked every iteration).
+
     Returns an OrderResult with filled / abandoned quantities and an audit
     trail of peg prices, order ids, and any notes.
     """
     start = now_fn()
+    # Per-order band (e.g. PEAD 7% / LUK 12%) overrides the batch-level default.
+    eff_band = request.drift_band if request.drift_band is not None else drift_band
     result = OrderResult(
         request=request,
         filled_qty=0,
@@ -167,6 +179,23 @@ def execute_order(
             result.notes.append(f"no_quote_iter_{result.iterations_used}")
             break
 
+        # Continuous drift-band give-up: stop chasing if the touch has moved past
+        # the band AGAINST us vs the assumed reference price (BUY: too far up;
+        # SELL: too far down). This bounds how far a persistent re-peg will chase.
+        if eff_band is not None and request.ref_price > 0:
+            adverse = (peg > request.ref_price * (1.0 + eff_band)
+                       if request.side == "BUY"
+                       else peg < request.ref_price * (1.0 - eff_band))
+            if adverse:
+                result.notes.append(
+                    f"drift_band_giveup: peg ₩{peg:,} vs ref ₩{request.ref_price:,} "
+                    f"({(peg/request.ref_price-1)*100:+.1f}%, band ±{eff_band*100:.0f}%)")
+                _reconcile_current_order()
+                if current_order_id is not None:
+                    broker.cancel_order(request.ticker, current_order_id)
+                    _reconcile_current_order()
+                break
+
         need_replace = (
             current_order_id is None
             or _should_repeg(request.side, current_peg, peg)
@@ -232,6 +261,7 @@ def execute_batch(
     max_order_krw: int = 5_000_000,
     max_session_seconds: float = 30 * 60,
     inter_order_sleep: float = 0.5,
+    drift_band: float | None = None,
     sleep_fn=time.sleep,
     now_fn=datetime.now,
     on_progress=None,
@@ -268,6 +298,7 @@ def execute_batch(
             max_iterations=max_iterations,
             poll_seconds=poll_seconds,
             max_order_krw=max_order_krw,
+            drift_band=drift_band,
             sleep_fn=sleep_fn,
             now_fn=now_fn,
         )

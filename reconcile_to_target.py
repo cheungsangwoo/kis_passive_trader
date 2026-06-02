@@ -29,6 +29,7 @@ This places REAL orders on your own account with your own keys. Read DISCLAIMER.
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 import os
 import sys
@@ -49,8 +50,14 @@ def _fmt(n: int) -> str:
     return f"{n:,}"
 
 
-def build_reconcile_orders(broker, portfolio, capital: int):
-    """Returns (orders, plan_rows). plan_rows is a printable diff incl. holds."""
+def build_reconcile_orders(broker, portfolio, capital: int, *, src_map: dict,
+                           buy_band: float, luk_band: float, aggressive_sells: bool):
+    """Returns (orders, plan_rows). plan_rows is a printable diff incl. holds.
+
+    Per-order give-up band: BUY on the high-momentum LUK leg uses `luk_band`
+    (those names are often locked at the limit — a wider band or it never fills),
+    other BUYs use `buy_band`. SELLs use no band when `aggressive_sells` (you want
+    to be OUT of a dropped name — chase the ask to fill), else `buy_band`."""
     holdings = broker.get_holdings()  # {ticker: {qty, name}}
     logger.info("Fetched %d current holdings from KIS.", len(holdings))
 
@@ -90,11 +97,19 @@ def build_reconcile_orders(broker, portfolio, capital: int):
             action, qty = "SELL", -delta
         else:
             action, qty = "HOLD", 0
-        plan_rows.append((action, tk, name, held, tgt, qty,
-                          "no_quote" if tk in no_quote else ""))
+        src = src_map.get(tk)
+        if action == "SELL":
+            band = None if aggressive_sells else buy_band
+        else:
+            band = luk_band if src == "luk_04" else buy_band
+        note = "no_quote" if tk in no_quote else (
+            ("LUK %.0f%%" % (band * 100)) if (action == "BUY" and src == "luk_04")
+            else (("band %.0f%%" % (band * 100)) if band is not None else "aggr"))
+        plan_rows.append((action, tk, name, held, tgt, qty, note))
         if action in ("BUY", "SELL") and qty > 0:
             orders.append(OrderRequest(ticker=tk, stock_name=name, side=action,
-                                       qty=qty, ref_price=target_ref.get(tk, 0)))
+                                       qty=qty, ref_price=target_ref.get(tk, 0),
+                                       drift_band=band))
     return orders, plan_rows
 
 
@@ -129,9 +144,17 @@ def main() -> int:
     p.add_argument("--mock", action="store_true", help="KIS paper server (모의투자). Test here first.")
     p.add_argument("--max-order-krw", type=int, default=5_000_000,
                    help="Per-order size cap (peg_executor). Default 5,000,000.")
-    p.add_argument("--max-session-min", type=int, default=30,
-                   help="Total execution session cap, minutes. Default 30.")
+    p.add_argument("--max-session-min", type=int, default=120,
+                   help="Total execution session cap, minutes. Default 120 (run toward close).")
     p.add_argument("--poll-seconds", type=float, default=8.0)
+    p.add_argument("--drift-band", type=float, default=0.07,
+                   help="BUY give-up band vs reference_close — stop chasing past this. Default 0.07 (7%%).")
+    p.add_argument("--luk-band", type=float, default=0.12,
+                   help="BUY band for the LUK (limit-up) leg — wider, those names gap. Default 0.12 (12%%).")
+    p.add_argument("--max-iter", type=int, default=120,
+                   help="Max re-peg iterations per order (persistence to fill). Default 120.")
+    p.add_argument("--aggressive-sells", action="store_true",
+                   help="SELLs ignore the band (chase the ask to fully exit dropped names).")
     p.add_argument("--yes", action="store_true", help="Skip the confirm prompt (non-interactive).")
     p.add_argument("--dry-run", action="store_true", help="Print the plan and exit; place NO orders.")
     args = p.parse_args()
@@ -139,7 +162,10 @@ def main() -> int:
     load_dotenv()
     try:
         portfolio = load_portfolio(args.portfolio)
-    except PortfolioError as e:
+        raw = json.loads(open(args.portfolio, encoding="utf-8").read())
+        src_map = {p.get("stock_code"): p.get("combo_source")
+                   for p in raw.get("positions", [])}
+    except (PortfolioError, ValueError, OSError) as e:
         logger.error("Could not load portfolio: %s", e)
         return 2
 
@@ -152,7 +178,10 @@ def main() -> int:
         logger.error("KIS auth failed: %s", e)
         return 3
 
-    orders, plan_rows = build_reconcile_orders(broker, portfolio, args.capital)
+    orders, plan_rows = build_reconcile_orders(
+        broker, portfolio, args.capital, src_map=src_map,
+        buy_band=args.drift_band, luk_band=args.luk_band,
+        aggressive_sells=args.aggressive_sells)
     print_plan(plan_rows, args.capital)
 
     if args.dry_run:
@@ -180,6 +209,8 @@ def main() -> int:
             max_order_krw=args.max_order_krw,
             max_session_seconds=args.max_session_min * 60,
             poll_seconds=args.poll_seconds,
+            max_iterations=args.max_iter,
+            drift_band=args.drift_band,
         )
     except KeyboardInterrupt:
         print("\n⏹ Ctrl-C — execution interrupted. Any order still resting was NOT "
