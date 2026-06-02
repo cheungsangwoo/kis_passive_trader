@@ -588,10 +588,17 @@ def main(argv: list[str] | None = None) -> int:
                               threshold=args.threshold)
         save_state_atomic(sp, state)
 
-        # Per-position drift confirmations (5-min timeout each).
-        apply_drift_decisions(items, state, TimedInput(),
-                              threshold=args.threshold,
-                              timeout=DRIFT_PROMPT_TIMEOUT, state_file=sp)
+        # Per-position drift confirmations (5-min timeout each). Ctrl-C here is
+        # BEFORE any order is placed, so just save the partial decisions and exit
+        # cleanly (no ugly traceback, no orders to cancel).
+        try:
+            apply_drift_decisions(items, state, TimedInput(),
+                                  threshold=args.threshold,
+                                  timeout=DRIFT_PROMPT_TIMEOUT, state_file=sp)
+        except KeyboardInterrupt:
+            print("\n⏹ Ctrl-C during drift review — no orders were placed; exiting.")
+            save_state_atomic(sp, state)
+            return 130
         if state.all_terminal():
             print("✓ All positions skipped — nothing to execute.")
             print_summary(state)

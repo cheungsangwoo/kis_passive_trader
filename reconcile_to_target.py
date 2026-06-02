@@ -165,17 +165,26 @@ def main() -> int:
     if not args.yes:
         if not args.mock:
             print("\n⚠  This will place REAL orders on your LIVE account.")
-        ans = input(f"Proceed with {len(orders)} order(s) (SELLs first, then BUYs)? (y/N): ")
+        try:
+            ans = input(f"Proceed with {len(orders)} order(s) (SELLs first, then BUYs)? (y/N): ")
+        except (KeyboardInterrupt, EOFError):
+            print("\nAborted.")
+            return 130
         if ans.strip().lower() != "y":
             print("Aborted.")
             return 0
 
-    results = execute_batch(
-        broker, orders,
-        max_order_krw=args.max_order_krw,
-        max_session_seconds=args.max_session_min * 60,
-        poll_seconds=args.poll_seconds,
-    )
+    try:
+        results = execute_batch(
+            broker, orders,
+            max_order_krw=args.max_order_krw,
+            max_session_seconds=args.max_session_min * 60,
+            poll_seconds=args.poll_seconds,
+        )
+    except KeyboardInterrupt:
+        print("\n⏹ Ctrl-C — execution interrupted. Any order still resting was NOT "
+              "auto-cancelled; check your KIS account / app and cancel manually.")
+        return 130
 
     print("\n" + "=" * 78)
     print("  RESULTS")

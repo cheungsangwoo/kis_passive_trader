@@ -79,19 +79,32 @@ class KisAPI(BrokerAPI):
     def __init__(self, paper: bool = True, *, max_retries: int = 4,
                  backoff_base: float = 0.5, sleep_fn=time.sleep):
         self.paper = paper
-        self.app_key = os.getenv("KIS_APP_KEY", "").strip()
-        self.app_secret = os.getenv("KIS_APP_SECRET", "").strip()
-        account = os.getenv("KIS_ACCOUNT", "").strip()
-        if not account:
-            no = os.getenv("KIS_ACCOUNT_NO", "").strip()
-            prdt = os.getenv("KIS_PRODUCT_CODE", "01").strip() or "01"
-            account = f"{no}-{prdt}" if no else ""
+        # KIS requires a SEPARATE 모의투자 (paper) app — its own key/secret/account,
+        # distinct from the live app. So --mock (paper=True) reads KIS_MOCK_* and
+        # live reads KIS_APP_*/KIS_ACCOUNT. (Paper falls back to the live vars only
+        # if the mock ones are unset, which then fails order auth with KIS's
+        # "해당 앱키는 모의투자용 앱키가 아닙니다" — the exact symptom that motivated this.)
+        if paper:
+            self.app_key = (os.getenv("KIS_MOCK_KEY", "").strip()
+                            or os.getenv("KIS_APP_KEY", "").strip())
+            self.app_secret = (os.getenv("KIS_MOCK_SECRET", "").strip()
+                               or os.getenv("KIS_APP_SECRET", "").strip())
+            account = (os.getenv("KIS_MOCK_ACCOUNT", "").strip()
+                       or os.getenv("KIS_ACCOUNT", "").strip())
+            cred_hint = ("KIS_MOCK_KEY, KIS_MOCK_SECRET, KIS_MOCK_ACCOUNT "
+                         "(create a 모의투자 app at apiportal.koreainvestment.com)")
+        else:
+            self.app_key = os.getenv("KIS_APP_KEY", "").strip()
+            self.app_secret = os.getenv("KIS_APP_SECRET", "").strip()
+            account = os.getenv("KIS_ACCOUNT", "").strip()
+            if not account:
+                no = os.getenv("KIS_ACCOUNT_NO", "").strip()
+                prdt = os.getenv("KIS_PRODUCT_CODE", "01").strip() or "01"
+                account = f"{no}-{prdt}" if no else ""
+            cred_hint = "KIS_APP_KEY, KIS_APP_SECRET, and KIS_ACCOUNT"
 
         if not (self.app_key and self.app_secret and account):
-            raise RuntimeError(
-                "KIS credentials missing. Set KIS_APP_KEY, KIS_APP_SECRET, and "
-                "either KIS_ACCOUNT or KIS_ACCOUNT_NO (+ KIS_PRODUCT_CODE) in .env."
-            )
+            raise RuntimeError(f"KIS credentials missing. Set {cred_hint} in .env.")
 
         if "-" in account:
             self.cano, self.acnt_prdt = account.split("-", 1)
