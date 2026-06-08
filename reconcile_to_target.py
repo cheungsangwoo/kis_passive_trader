@@ -11,6 +11,20 @@ Full-account match (the account is assumed dedicated to the strategy):
       delta < 0  -> SELL -delta     (rest at best ask)
       delta == 0 -> hold (no order)
   - A held ticker NOT in the target has target_qty 0 -> SELL all of it.
+  - SAFETY GUARD (2026-06-08): a held ticker that IS still in the target basket but
+    whose target_qty floored to 0 — its share price exceeds the per-name budget
+    (capital*weight), or it couldn't be priced (no_quote) — is KEPT, not sold.
+    Selling it would exit a name we want to hold purely because of capital
+    granularity (e.g. a ~600k share when the per-name budget is ~333k). Only names
+    that genuinely LEFT the basket are sold to zero; basket members are never
+    floor-sold.
+  - MINIMAL-CHURN BAND (2026-06-08, --rebalance-band, default 25%): a held basket
+    member whose position is within the band of its intended KRW allocation
+    (capital*weight) is left alone — no share-by-share re-truing. Drift is measured
+    in KRW, not rounded shares. Genuine adds/drops always execute; only small
+    weight-drift trades are suppressed. So a routine reshuffle trades just what
+    actually changed (e.g. SELL the dropped name + BUY the new one). Set 0 for a
+    full per-share rebalance.
 
 Every target name gets an order attempt — so even a locked-limit-up (점상한가)
 name that can't fill still gets a resting BUY (it just abandons after the peg
@@ -51,13 +65,20 @@ def _fmt(n: int) -> str:
 
 
 def build_reconcile_orders(broker, portfolio, capital: int, *, src_map: dict,
-                           buy_band: float, luk_band: float, aggressive_sells: bool):
+                           buy_band: float, luk_band: float, aggressive_sells: bool,
+                           rebalance_band: float = 0.0):
     """Returns (orders, plan_rows). plan_rows is a printable diff incl. holds.
 
     Per-order give-up band: BUY on the high-momentum LUK leg uses `luk_band`
     (those names are often locked at the limit — a wider band or it never fills),
     other BUYs use `buy_band`. SELLs use no band when `aggressive_sells` (you want
-    to be OUT of a dropped name — chase the ask to fill), else `buy_band`."""
+    to be OUT of a dropped name — chase the ask to fill), else `buy_band`.
+
+    `rebalance_band` (>0 enables) is the minimal-churn tolerance: a HELD basket member
+    whose position is within this fraction of its intended KRW allocation (capital*weight)
+    is left alone rather than re-trued share-by-share. Genuine adds (new names) and genuine
+    drops (names that left the basket) always execute; only small weight-drift re-truing is
+    suppressed. Default 0.0 here (off) — the CLI sets it to 0.25."""
     holdings = broker.get_holdings()  # {ticker: {qty, name}}
     logger.info("Fetched %d current holdings from KIS.", len(holdings))
 
@@ -65,6 +86,8 @@ def build_reconcile_orders(broker, portfolio, capital: int, *, src_map: dict,
     target_qty: dict[str, int] = {}
     target_name: dict[str, str] = {}
     target_ref: dict[str, int] = {}
+    price_by: dict[str, int] = {}        # live price per target name (for the tolerance band)
+    tgt_value: dict[str, float] = {}     # intended KRW allocation = capital * weight
     no_quote: list[str] = []
     for p in portfolio.positions:
         if p.side != "BUY" or not p.weight:
@@ -72,11 +95,13 @@ def build_reconcile_orders(broker, portfolio, capital: int, *, src_map: dict,
         tk = p.stock_code
         target_name[tk] = p.stock_name or tk
         target_ref[tk] = int(p.reference_close or 0)
+        tgt_value[tk] = capital * float(p.weight)
         try:
             price = broker.get_price(tk)
         except Exception as e:  # noqa: BLE001
             logger.warning("price fetch failed for %s: %s", tk, e)
             price = 0
+        price_by[tk] = price
         if price <= 0:
             no_quote.append(tk)
             target_qty[tk] = 0
@@ -90,6 +115,26 @@ def build_reconcile_orders(broker, portfolio, capital: int, *, src_map: dict,
         held = holdings.get(tk, {}).get("qty", 0)
         tgt = target_qty.get(tk, 0)
         name = target_name.get(tk) or holdings.get(tk, {}).get("name", "") or tk
+        # SAFETY GUARD: never SELL a name that is STILL in the target basket but whose
+        # target floored to 0 (priced above the per-name budget) or couldn't be priced.
+        # Genuinely-dropped names (NOT in target_name) are unaffected and still sell to 0.
+        if tk in target_name and tgt == 0 and held > 0:
+            reason = "no_quote — kept (not floor-sold)" if tk in no_quote \
+                else "floors <1 share at this capital — kept (not floor-sold)"
+            plan_rows.append(("HOLD", tk, name, held, tgt, 0, reason))
+            continue
+        # TOLERANCE BAND: skip resizing a HELD basket member that is still within `rebalance_band`
+        # of its intended KRW allocation. Drift is measured in KRW vs capital*weight (NOT the
+        # rounded share target), so whole-share lumpiness on low-priced / low-count names doesn't
+        # read as a huge %. Genuine ADDS (held==0) and genuine DROPS (not in target_name) are NOT
+        # banded — they always execute. Material drift (> band) still rebalances to the share target.
+        if rebalance_band > 0 and tk in target_name and held > 0 and tgt > 0:
+            price = price_by.get(tk, 0)
+            tv = tgt_value.get(tk, 0.0)
+            if price > 0 and tv > 0 and abs(held * price - tv) / tv <= rebalance_band:
+                plan_rows.append(("HOLD", tk, name, held, tgt, 0,
+                                  "within %.0f%% band — kept" % (rebalance_band * 100)))
+                continue
         delta = tgt - held
         if delta > 0:
             action, qty = "BUY", delta
@@ -155,6 +200,11 @@ def main() -> int:
                    help="Max re-peg iterations per order (persistence to fill). Default 120.")
     p.add_argument("--aggressive-sells", action="store_true",
                    help="SELLs ignore the band (chase the ask to fully exit dropped names).")
+    p.add_argument("--rebalance-band", type=float, default=0.25,
+                   help="Minimal-churn tolerance: leave a held basket name alone if its position "
+                        "is within this fraction of its target KRW allocation (capital*weight). "
+                        "Only genuine adds/drops + materially-drifted names trade. Default 0.25 "
+                        "(25%%). Set 0 to re-true every name share-by-share (full rebalance).")
     p.add_argument("--yes", action="store_true", help="Skip the confirm prompt (non-interactive).")
     p.add_argument("--dry-run", action="store_true", help="Print the plan and exit; place NO orders.")
     args = p.parse_args()
@@ -181,7 +231,7 @@ def main() -> int:
     orders, plan_rows = build_reconcile_orders(
         broker, portfolio, args.capital, src_map=src_map,
         buy_band=args.drift_band, luk_band=args.luk_band,
-        aggressive_sells=args.aggressive_sells)
+        aggressive_sells=args.aggressive_sells, rebalance_band=args.rebalance_band)
     print_plan(plan_rows, args.capital)
 
     if args.dry_run:
