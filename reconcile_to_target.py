@@ -25,6 +25,11 @@ Full-account match (the account is assumed dedicated to the strategy):
     weight-drift trades are suppressed. So a routine reshuffle trades just what
     actually changed (e.g. SELL the dropped name + BUY the new one). Set 0 for a
     full per-share rebalance.
+  - GENUINE-DROP EXIT (2026-06-08): a name that LEFT the basket (not in the target)
+    always sells AGGRESSIVELY (ignores the give-up band) — you want out regardless of
+    a falling price. A banded chase can silently leave a dropped name unsold (the
+    나이스디앤비 0/61 abandon, 2026-06-08, when it fell >7% past the band). Trims of names
+    still in the basket stay banded unless --aggressive-sells.
 
 Every target name gets an order attempt — so even a locked-limit-up (점상한가)
 name that can't fill still gets a resting BUY (it just abandons after the peg
@@ -149,13 +154,25 @@ def build_reconcile_orders(broker, portfolio, capital: int, *, src_map: dict,
         else:
             action, qty = "HOLD", 0
         src = src_map.get(tk)
+        # GENUINE-DROP EXIT: a name that LEFT the basket (not in the target) always sells
+        # aggressively (no give-up band) — you want OUT regardless of a falling price. A banded
+        # chase can silently leave a dropped name unsold (the 나이스디앤비 0/61 abandon, 2026-06-08).
+        # Trims of names STILL in the basket stay banded unless --aggressive-sells.
+        is_drop = (action == "SELL" and tk not in target_name)
         if action == "SELL":
-            band = None if aggressive_sells else buy_band
+            band = None if (aggressive_sells or is_drop) else buy_band
         else:
             band = luk_band if src == "luk_04" else buy_band
-        note = "no_quote" if tk in no_quote else (
-            ("LUK %.0f%%" % (band * 100)) if (action == "BUY" and src == "luk_04")
-            else (("band %.0f%%" % (band * 100)) if band is not None else "aggr"))
+        if tk in no_quote:
+            note = "no_quote"
+        elif is_drop:
+            note = "exit (aggr — left basket)"
+        elif action == "BUY" and src == "luk_04":
+            note = "LUK %.0f%%" % (band * 100)
+        elif band is not None:
+            note = "band %.0f%%" % (band * 100)
+        else:
+            note = "aggr"
         plan_rows.append((action, tk, name, held, tgt, qty, note))
         if action in ("BUY", "SELL") and qty > 0:
             orders.append(OrderRequest(ticker=tk, stock_name=name, side=action,
