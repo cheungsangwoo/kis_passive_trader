@@ -445,3 +445,33 @@ class KisAPI(BrokerAPI):
             else:
                 break
         return holdings
+
+    def get_account_value(self) -> dict:
+        """Account summary from inquire-balance output2 (the totals row): NAV (net assets,
+        incl. cash), settled cash, and stock market value — all whole KRW.
+
+        Used by the reconcile flow's `--capital auto` to size a rebalance to the account's
+        ACTUAL value rather than a stale fixed number (a fixed target over-deploys after a
+        drawdown and under-deploys after a rally). output2 is the account-level summary, so a
+        single un-paginated call suffices.
+        """
+        self._ensure_token()
+        tr_id = _tr(*TR_BALANCE, self.paper)
+        resp = self._request_with_retry(
+            "GET",
+            f"{self.base}/uapi/domestic-stock/v1/trading/inquire-balance",
+            headers=self._headers(tr_id),
+            params={
+                **self._acct_params(),
+                "AFHR_FLPR_YN": "N", "OFL_YN": "", "INQR_DVSN": "02",
+                "UNPR_DVSN": "01", "FUND_STTL_ICLD_YN": "N",
+                "FNCG_AMT_AUTO_RDPT_YN": "N", "PRCS_DVSN": "00",
+                "CTX_AREA_FK100": "", "CTX_AREA_NK100": "",
+            },
+        )
+        resp.raise_for_status()
+        o2 = (resp.json().get("output2") or [{}])[0]
+        nav = _int(o2.get("nass_amt")) or _int(o2.get("tot_evlu_amt"))
+        cash = _int(o2.get("dnca_tot_amt"))
+        stock = _int(o2.get("scts_evlu_amt")) or _int(o2.get("evlu_amt_smtl_amt"))
+        return {"nav": nav, "cash": cash, "stock_value": stock}

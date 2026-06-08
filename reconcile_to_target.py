@@ -35,8 +35,14 @@ then BUYs; orders rest at the touch, re-peg only when the touch moves against
 us, and abandon unfilled qty after the peg loop — never chasing the spread.
 
 Usage (LIVE = real money; ALWAYS test --mock first):
-    python reconcile_to_target.py --portfolio basket.json --capital 10000000 --mock
-    python reconcile_to_target.py --portfolio basket.json --capital 10000000        # LIVE
+    python reconcile_to_target.py --portfolio basket.json --capital auto --mock
+    python reconcile_to_target.py --portfolio basket.json --capital auto              # LIVE
+    python reconcile_to_target.py --portfolio basket.json --capital auto --deploy-frac 0.98
+    python reconcile_to_target.py --portfolio basket.json --capital 10000000          # fixed sum
+
+  --capital auto sizes to the account's live NAV (rebalance to actual value); a fixed
+  number is for when you're deliberately adding/withdrawing cash. --deploy-frac keeps a
+  cash buffer (e.g. 0.98) so a near-100% deploy never starves the executor.
 
 This places REAL orders on your own account with your own keys. Read DISCLAIMER.md.
 """
@@ -185,7 +191,15 @@ def main() -> int:
     p = argparse.ArgumentParser(description=__doc__,
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--portfolio", required=True, help="Target portfolio JSON (F6 export).")
-    p.add_argument("--capital", required=True, type=int, help="Total capital to deploy, whole KRW.")
+    p.add_argument("--capital", required=True,
+                   help="Total capital in whole KRW, or 'auto' to size to the account's live NAV "
+                        "(총평가/순자산 read from KIS). For a REBALANCE use 'auto' — a fixed number "
+                        "over-deploys after a drawdown (BUYs reject for lack of cash) and "
+                        "under-deploys after a rally (idle cash).")
+    p.add_argument("--deploy-frac", type=float, default=1.0,
+                   help="Fraction of capital to actually deploy — a cash buffer. e.g. 0.98 keeps "
+                        "~2%% cash so a near-100%% deploy never starves the executor's cancel-"
+                        "replace. Default 1.0. Applied to --capital (incl. the 'auto' NAV).")
     p.add_argument("--mock", action="store_true", help="KIS paper server (모의투자). Test here first.")
     p.add_argument("--max-order-krw", type=int, default=5_000_000,
                    help="Per-order size cap (peg_executor). Default 5,000,000.")
@@ -228,11 +242,38 @@ def main() -> int:
         logger.error("KIS auth failed: %s", e)
         return 3
 
+    # Resolve capital: 'auto' -> the account's live NAV (rebalance to actual value); else whole KRW.
+    if str(args.capital).strip().lower() in ("auto", "nav"):
+        try:
+            acct = broker.get_account_value()
+        except Exception as e:  # noqa: BLE001
+            logger.error("--capital auto: could not read account NAV: %s", e)
+            return 3
+        base_capital = acct["nav"]
+        logger.info("--capital auto: NAV=%s KRW (cash %s + stock %s)",
+                    _fmt(acct["nav"]), _fmt(acct["cash"]), _fmt(acct["stock_value"]))
+        if base_capital <= 0:
+            logger.error("--capital auto: account NAV is %s — nothing to deploy.", _fmt(base_capital))
+            return 3
+    else:
+        try:
+            base_capital = int(str(args.capital).replace(",", ""))
+        except ValueError:
+            logger.error("--capital must be whole KRW or 'auto', got %r", args.capital)
+            return 2
+    if not (0 < args.deploy_frac <= 1.0):
+        logger.error("--deploy-frac must be in (0, 1.0], got %s", args.deploy_frac)
+        return 2
+    capital = int(base_capital * args.deploy_frac)
+    if args.deploy_frac != 1.0:
+        logger.info("--deploy-frac %.3f -> deploying %s of %s KRW",
+                    args.deploy_frac, _fmt(capital), _fmt(base_capital))
+
     orders, plan_rows = build_reconcile_orders(
-        broker, portfolio, args.capital, src_map=src_map,
+        broker, portfolio, capital, src_map=src_map,
         buy_band=args.drift_band, luk_band=args.luk_band,
         aggressive_sells=args.aggressive_sells, rebalance_band=args.rebalance_band)
-    print_plan(plan_rows, args.capital)
+    print_plan(plan_rows, capital)
 
     if args.dry_run:
         print("\nDRY-RUN — no orders placed.")
